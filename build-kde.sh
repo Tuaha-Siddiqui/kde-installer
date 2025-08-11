@@ -1,168 +1,63 @@
 #!/bin/bash
 
-# KDE Plasma Git Build Script for Kubuntu
-# This script builds KDE Plasma from source without using dpkg
+# ==============================================
+# INSTALL KDE PLASMA 5.18.8 FROM SOURCE (UBUNTU)
+# ==============================================
+# This script automates the download, compilation, and installation of Plasma 5.18.8.
+# WARNING: This may conflict with existing desktop environments. Use at your own risk.
 
-set -euo pipefail
+set -e  # Exit on error
 
-# Configuration
-KDESRC_DIR="$HOME/kde"
-INSTALL_PREFIX="$KDESRC_DIR/install"
-BUILD_THREADS=$(nproc --all)
+# --- Step 1: Install Dependencies ---
+echo "[INFO] Installing build dependencies..."
+sudo apt update
+sudo apt install -y \
+    build-essential cmake extra-cmake-modules qtbase5-dev \
+    libkf5plasma-dev libkf5kio-dev libkf5activities-dev \
+    libkf5declarative-dev libkf5xmlgui-dev libkf5notifications-dev \
+    libkf5globalaccel-dev libkf5configwidgets-dev libkf5wayland-dev \
+    libkf5guiaddons-dev libkf5dbusaddons-dev gettext ninja-build
 
-# Error handling function
-handle_error() {
-    echo -e "\nERROR: Build failed at line $1"
-    echo "Check the logs in $KDESRC_DIR/build/log/"
+# --- Step 2: Download Plasma 5.18.8 Source ---
+WORKDIR="$HOME/plasma-build"
+mkdir -p "$WORKDIR" && cd "$WORKDIR"
+
+echo "[INFO] Downloading Plasma 5.18.8 source..."
+wget -q --show-progress https://download.kde.org/Attic/plasma/5.18.8/plasma-desktop-5.18.8.tar.xz
+tar -xf plasma-desktop-5.18.8.tar.xz
+cd plasma-desktop-5.18.8
+
+# --- Step 3: Configure and Compile ---
+mkdir -p build && cd build
+echo "[INFO] Running CMake..."
+cmake -DCMAKE_INSTALL_PREFIX=/usr \
+      -DCMAKE_BUILD_TYPE=Release \
+      -GNinja .. 2>&1 | tee cmake.log
+
+if [ ! -f "Makefile" ] && [ ! -f "build.ninja" ]; then
+    echo "[ERROR] CMake failed to generate build files. Check 'cmake.log'."
     exit 1
-}
+fi
 
-trap 'handle_error $LINENO' ERR
+echo "[INFO] Compiling Plasma (this may take a while)..."
+ninja -j$(nproc) 2>&1 | tee build.log
 
-# Create required directories
-create_dirs() {
-    echo "Creating directory structure..."
-    mkdir -p "$KDESRC_DIR"/{src,build,install,log} || {
-        echo "Failed to create directories"
-        exit 1
-    }
-}
+# --- Step 4: Install ---
+echo "[INFO] Installing Plasma..."
+sudo ninja install 2>&1 | tee install.log
 
-# Install basic build dependencies
-install_deps() {
-    echo "Checking for basic build tools..."
+# --- Step 5: Clean Up ---
+echo "[INFO] Cleaning up..."
+cd "$WORKDIR"
+rm -rf plasma-desktop-5.18.8*
 
-    local required_tools=(
-        git cmake g++ make extra-cmake-modules 
-        ninja-build gettext libffi-dev libxml2-dev
-        libxslt1-dev libjpeg-dev libpng-dev
-        libfreetype6-dev libsqlite3-dev
-        libx11-dev libxcb1-dev libxext-dev
-        libxfixes-dev libxrender-dev libxrandr-dev
-        libxdamage-dev libxcomposite-dev libxshmfence-dev
-        libxkbfile-dev libxcursor-dev libxinerama-dev
-        libfontconfig1-dev libglib2.0-dev libinput-dev
-        libwayland-dev libegl1-mesa-dev libgbm-dev
-        libsystemd-dev libdrm-dev libudev-dev
-        libpulse-dev libssl-dev libicu-dev
-        libavcodec-dev libavformat-dev libavutil-dev
-        libswscale-dev libswresample-dev
-    )
+# --- Step 6: Restart Plasma (if running) ---
+if pgrep -x "plasmashell" >/dev/null; then
+    echo "[INFO] Restarting Plasma..."
+    kquitapp5 plasmashell || true
+    kstart5 plasmashell
+else
+    echo "[INFO] Log out and select Plasma from your display manager to start it."
+fi
 
-    if ! command -v apt-get >/dev/null 2>&1; then
-        echo "Warning: apt-get not found. You'll need to install dependencies manually."
-        return
-    fi
-
-    echo "Installing build dependencies..."
-    sudo apt-get update
-    sudo apt-get install -y "${required_tools[@]}" || {
-        echo "Failed to install dependencies"
-        exit 1
-    }
-}
-
-# Setup environment
-setup_environment() {
-    echo "Setting up build environment..."
-
-    cat << EOF >> "$HOME/.bashrc"
-# KDE Build Environment
-export KDESRC_BUILD="$KDESRC_DIR"
-export PATH="$INSTALL_PREFIX/bin:\$PATH"
-export LD_LIBRARY_PATH="$INSTALL_PREFIX/lib:\$LD_LIBRARY_PATH"
-export XDG_DATA_DIRS="$INSTALL_PREFIX/share:\$XDG_DATA_DIRS"
-export QT_PLUGIN_PATH="$INSTALL_PREFIX/lib/plugins:\$QT_PLUGIN_PATH"
-export QML2_IMPORT_PATH="$INSTALL_PREFIX/lib/qml:\$QML2_IMPORT_PATH"
-EOF
-
-    source "$HOME/.bashrc"
-}
-
-# Clone kdesrc-build
-get_kdesrc_build() {
-    echo "Cloning kdesrc-build..."
-    if [ ! -d "$KDESRC_DIR/kdesrc-build" ]; then
-        git clone https://invent.kde.org/sdk/kdesrc-build.git "$KDESRC_DIR/kdesrc-build" || {
-            echo "Failed to clone kdesrc-build"
-            exit 1
-        }
-    else
-        echo "kdesrc-build already exists, updating..."
-        git -C "$KDESRC_DIR/kdesrc-build" pull || {
-            echo "Failed to update kdesrc-build"
-            exit 1
-        }
-    fi
-}
-
-# Configure kdesrc-build
-configure_build() {
-    echo "Configuring kdesrc-build..."
-
-    cat > "$HOME/.config/kdesrc-buildrc" << EOF
-global
-    # Install directory
-    kdedir $INSTALL_PREFIX
-    
-    # Directory for downloaded source code
-    source-dir $KDESRC_DIR/src
-    
-    # Directory to build each module
-    build-dir $KDESRC_DIR/build
-    
-    # Number of jobs for make
-    make-options -j$BUILD_THREADS
-    
-    # Use Ninja instead of Make
-    cmake-generator Ninja
-    
-    # Stop on failure
-    stop-on-failure true
-end global
-
-include /kf5-qt5
-EOF
-}
-
-# Build KDE components
-build_kde() {
-    echo "Starting KDE build process..."
-    cd "$KDESRC_DIR/kdesrc-build"
-    
-    # Build frameworks first
-    echo "Building KDE Frameworks..."
-    ./kdesrc-build frameworks > "$KDESRC_DIR/log/frameworks.log" 2>&1
-    
-    # Then Plasma
-    echo "Building Plasma..."
-    ./kdesrc-build plasma-workspace plasma-desktop > "$KDESRC_DIR/log/plasma.log" 2>&1
-    
-    # Optional: Applications
-    read -rp "Build KDE Applications as well? (y/N) " choice
-    if [[ "$choice" =~ ^[Yy]$ ]]; then
-        echo "Building KDE Applications..."
-        ./kdesrc-build kde-applications > "$KDESRC_DIR/log/applications.log" 2>&1
-    fi
-}
-
-# Main execution
-main() {
-    echo "KDE Plasma Git Build Script for Kubuntu"
-    echo "======================================"
-    
-    create_dirs
-    install_deps
-    setup_environment
-    get_kdesrc_build
-    configure_build
-    build_kde
-    
-    echo -e "\nBuild completed successfully!"
-    echo "To run your newly built Plasma session:"
-    echo "For X11: startplasma-x11"
-    echo "For Wayland: startplasma-wayland"
-    echo "You may need to log out and select the custom session from your display manager."
-}
-
-main
+echo "[SUCCESS] Plasma 5.18.8 installed!"
